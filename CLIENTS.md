@@ -8,6 +8,7 @@ API Key  : sk-gw-xxxxxxxx                  ← manage_keys.py add 签发，仅�
 Model    : free/auto                       ← 或 wb/step-5-preview、qoder/qwen3.8-flash 等 39 个
 ```
 
+> 启动网关：`./run.sh`（macOS/Linux）或 `run.bat`（Windows），首次自动建 venv 装依赖；也可 `python -m gateway`。
 > 服务不在本机时：把 Base URL 的 `127.0.0.1` 换成网关机器的 IP/域名，并确认网关以 `GATEWAY_HOST=0.0.0.0` 启动（见下文"三种距离"）。
 
 ## 0. 30 秒自测（curl）
@@ -26,9 +27,9 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 |---|---|---|
 | 本机（网关跑在这台电脑） | `http://127.0.0.1:8317/v1` | 默认即可 |
 | 局域网（手机/别的电脑） | `http://<局域网IP>:8317/v1`，如 `http://192.168.1.5:8317/v1` | `.env` 设 `GATEWAY_HOST=0.0.0.0`；Windows 防火墙放行 8317 |
-| 公网（随时随地） | `https://<你的域名>/v1` | 按 README §5 部署到服务器 + Caddy/Nginx/Tunnel 上 HTTPS |
+| 公网（随时随地） | `https://<你的域名>/v1` | 按 README §4 部署到服务器 + Caddy/Nginx/Tunnel 上 HTTPS |
 
-查本机局域网 IP：Windows `ipconfig` 看 "IPv4 地址"，macOS/Linux `ifconfig`/`ip addr`。
+查本机局域网 IP：Windows `ipconfig` 看 "IPv4 地址"；macOS `ipconfig getifaddr en0`；Linux `ip addr`。
 
 ## 2. 代码调用（零改造）
 

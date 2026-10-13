@@ -16,6 +16,15 @@ from .app import create_app
 from .config import Settings, load_dotenv
 
 
+def _ensure_utf8_stdio() -> None:
+    """Windows 中文控制台默认 GBK 代码页，重配置为 UTF-8 避免打印崩溃（Python 3.7+）。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
 def _qoder_login() -> None:
     from . import qoder_direct as qd
 
@@ -46,6 +55,7 @@ def _qoder_status() -> None:
 
 
 def main() -> None:
+    _ensure_utf8_stdio()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog="gateway", description="统一模型网关")
     sub = parser.add_subparsers(dest="cmd")

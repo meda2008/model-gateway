@@ -1,0 +1,17 @@
+.git
+.github
+.env
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+tests/
+*.md
+Dockerfile
+.dockerignore

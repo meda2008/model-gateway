@@ -1,6 +1,10 @@
 # 统一模型网关（model-gateway）
 
-把 **WorkBuddy 云服务** 和 **Qoder** 里的免费模型能力，桥接成一个**自带 API Key 的 OpenAI 兼容服务**，供任何客户端（Cherry Studio、ChatBox、9router、自研脚本、其他 Agent）使用。**单进程运行**：Qoder 的登录态管理与上游调用已内嵌（移植自社区 Qoder2Api），不再需要第二个进程/端口/密钥。
+[![ci](https://github.com/meda2008/model-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/meda2008/model-gateway/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
+把 **WorkBuddy 云服务** 和 **Qoder** 的免费模型能力，桥接成一个**自带 API Key 的 OpenAI 兼容服务**，供任何客户端（Cherry Studio、ChatBox、Cline、Dify、自研脚本）使用。**单进程、跨平台（Windows / macOS / Linux）、零外部依赖服务**。
 
 ```
                 ┌──────────────────────────────────────────────┐
@@ -19,103 +23,100 @@
         └─────────────────────────────┘   └────────────────────────────┘
 ```
 
-## 0. 两边免费模型的真相（先读这个）
+## 特性
 
-| | WorkBuddy | Qoder |
-|---|---|---|
-| 免费模型 | 云服务 LLM API 按应用提供创建者配额（免用户 key） | qwen3.8-flash 零积分；qwen3.7-plus / kimi-k2.7-code / deepseek-v4-pro / minimax-m2.5 花试用积分 |
-| 官方出站 API | **没有**。桌面端自带的模型（Step/GLM/Hy3 等）不对外提供 API；官方唯一可编程路径是云服务 LLM API | **没有**。官方只开放了"自定义模型入站"（CLI v1.1.50+ 支持 OpenAI/Anthropic 兼容接入），出站需社区方案 |
-| 桥接方式 | 本网关 WorkBuddyBackend（协议提取自官方 SDK） | 内嵌 QoderDirectBackend（移植自社区 Qoder2Api，设备登录，非官方） |
-| 关键约束 | 仅流式；服务端校验 Origin 与应用发布域名一致；按应用环境隔离 | 非官方，随时可能失效；有每日调用上限；tool 角色会被折叠成 user |
-| 风险 | 免费配额非 SLA，超额返回 quota_ 错误 | 逆向方案有 ToS 风险，仅建议个人自用、作降级后备 |
+- **单进程双后端**：WorkBuddy 云服务 LLM + Qoder 直连（内嵌移植，无需第二个进程/端口/密钥）
+- **OpenAI 兼容**：`/v1/chat/completions`、`/v1/models`；流式透传，非流式自动合成
+- **自有 Key 体系**：`sk-gw-` 前缀，SQLite 存哈希；每 key 独立 RPM/日限；用量对账
+- **双池降级**：`free/auto` 按链路自动故障转移（首包前生效，流开始后不重复输出）
+- **跨平台**：Windows / macOS / Linux 一致行为；CI 在三个 OS × 三个 Python 版本上验证
+- **可复现**：`requirements.lock.txt` 锁定依赖；Docker 一键部署
 
-## 1. 快速开始（4 步）
+## 1. 快速开始
+
+### 方式 A：一键脚本（推荐）
 
 ```bash
-# ① 装依赖（本项目开发时已装在 WorkBuddy 托管 venv；自用请建自己的 venv）
-cd model-gateway
-python -m venv .venv && .venv/bin/pip install -r requirements.txt   # Windows: .venv\Scripts\pip
+# macOS / Linux
+chmod +x run.sh
+./run.sh                      # 首次运行自动建 venv + 装依赖 + 起网关
+./run.sh qoder-login          # Qoder 设备登录（一次性，浏览器批准）
+./run.sh qoder-status         # 查看 Qoder 账号档位与积分
 
-# ② Qoder 一次性设备登录（已登录过可跳过；token 存 ~/.qoder2api-auth.json）
-python -m gateway qoder-login        # 浏览器打开弹出的链接并批准
-python -m gateway qoder-status       # 可选：看账号档位与积分余额
+# Windows（命令提示符/PowerShell）
+run.bat
+run.bat qoder-login
+run.bat qoder-status
+```
 
-# ③ 填 .env（复制 .env.example）
+### 方式 B：手动四步
+
+```bash
+# ① 建虚拟环境并装依赖（Python 3.10+）
+python -m venv .venv
+. .venv/bin/activate          # Windows: .venv\Scripts\activate.bat
+pip install -r requirements.txt          # 或 requirements.lock.txt（精确锁定）
+
+# ② Qoder 一次性设备登录（token 存 ~/.qoder2api-auth.json；已登录过可跳过）
+python -m gateway qoder-login
+
+# ③ 配置
 cp .env.example .env
-#   QODER_MODE=direct（默认，内嵌直连；proxy=独立 Qoder2Api 进程，备选）
-#   WB_ENDPOINT / WB_PUBLISHABLE_KEY 见第 3 节（激活云服务后拿）
+#    填 WB_ENDPOINT / WB_PUBLISHABLE_KEY（WorkBuddy 云服务，见第 7 节）
+#    QODER_MODE=direct 已是默认值，Qoder 侧无需其他配置
 
 # ④ 起网关 + 签发 key
-python -m gateway                                        # 监听 127.0.0.1:8317，唯一进程
-python manage_keys.py add --name cherry-studio           # 打印 sk-gw-xxx，只显示一次
-
-# ⑤ 任意 OpenAI 客户端连上来
-#   Base URL: http://127.0.0.1:8317/v1
-#   API Key:  sk-gw-xxx
-#   模型:     free/auto（或 qoder/qwen3.8-flash、wb/<模型id>）
+python -m gateway                               # 监听 127.0.0.1:8317
+python manage_keys.py add --name my-client      # 打印 sk-gw-xxx，只显示一次
 ```
 
-## 2. 模型命名与路由
+### 分 OS 备注
 
-| 请求的 model | 行为 |
+| OS | 注意事项 |
 |---|---|
-| `free/auto`（或 `auto`） | 按 `FREE_AUTO_CHAIN` 顺序尝试各后端默认模型，失败自动降级 |
-| `wb/<id>` | 指定 WorkBuddy 后端，`<id>` 为云服务模型目录里的 id |
-| `qoder/<id>` | 指定 Qoder 后端（直连或 proxy，取决于 `QODER_MODE`） |
-| 裸 `<id>` | 按各后端目录匹配（WB 目录启动时自动拉取，也可用 `WB_MODELS` 静态指定） |
+| Windows | 装 Python 时勾选 "Add python.exe to PATH"；`run.bat` 纯 ASCII 无编码问题；中文控制台已内置 UTF-8 重配置 |
+| macOS | 用 `python3`（系统自带的是 `python3`）；`run.sh` 首次需 `chmod +x` |
+| Linux | 无桌面环境时 `qoder-login` 不会自动开浏览器，手动复制终端里打印的 URL 即可 |
 
-- `GET /v1/models` 返回聚合目录：`free/auto` + `wb/*` + `qoder/*`
-- 流式请求（`stream: true`）透传 SSE；非流式请求对 WorkBuddy 会自动收集 SSE 合成标准 JSON
-- 降级只发生在**首包发出前**；流开始后上游中断会以错误事件收尾（已在响应中说明）
-
-## 3. WorkBuddy 侧对接详解
-
-1. **激活云服务**：在 WorkBuddy 对话里说"给模型网关激活云服务"（会弹官方确认框）。激活后得到 `publicConfig`：
-   - `endpoint` —— 形如 `https://<应用发布域名>.workbuddy.link`（数据面基址）
-   - `publishableKey` —— `wbpk_` 开头（本来就是设计为前端可见的标识，**不是秘密**，真正的边界是 Origin 校验）
-2. **填 .env**：`WB_ENDPOINT=<endpoint>`，`WB_PUBLISHABLE_KEY=<wbpk_...>`
-3. **Origin**：服务端校验 Origin 与应用发布域名一致。网关默认取 endpoint 的 origin；若报 `auth_` 类错误，设 `WB_ORIGIN=https://<应用发布域名>`
-4. **选默认模型**：起网关后 `GET /v1/models` 看 WB 侧目录，把选中的 id 填 `WB_DEFAULT_MODEL`（不填则 `free/auto` 不含 WB）
-5. **配额**：云服务 LLM 按应用有创建者配额（免用户 key，超额报 `quota_` 错误）。用量/配额 SDK 不暴露，到 WorkBuddy 管理面板看
-
-> 本仓库已激活的应用：`wbapp_nn8LMsBtR5Sdx4OJd8hRes`（域名 `model-gateway-89195.app.workbuddy.host`），
-> 目录 32 个模型：`auto` / `step-5-preview` / `hy4-preview` / `glm-5.3`(-flash) / `glm-5v-turbo` /
-> `kimi-k3-1` / `kimi-k2-thinking` / `deepseek-v4-pro`(-flash) / `minimax-m3` / `hunyuan-2.0-thinking` 等。
-> 实测 `step-5-preview` 与 `auto` 均有 `credit: 0` 的零积分调用；思考类模型吃满小 max_tokens 时正文可能为空（reasoning_content 单独存放），调用时留足预算。
-
-## 4. Qoder 侧对接详解（两种模式）
-
-**direct（默认，推荐）**——Qoder2Api 的登录态管理与上游调用已内嵌进网关（`gateway/qoder_direct.py`，移植自社区项目 Qoder2Api）：
-
-- 上游：`https://api2-v2.qoder.sh/model/v1/chat/completions`（OpenAI 格式，Bearer token）
-- 登录态存 `~/.qoder2api-auth.json`（token + refreshToken，过期自动刷新）；与独立 Qoder2Api 共用同一文件，两边可随时切换
-- 登录/查状态：`python -m gateway qoder-login` / `python -m gateway qoder-status`
-- 无需第二个端口、第二套 key（`sk-gw-` 就是唯一钥匙）
-
-**proxy（备选）**——跑独立 Qoder2Api 进程，网关走 OpenAI 兼容适配器：
+## 2. 配置（.env 全量）
 
 ```bash
-git clone https://github.com/ErfanBagheri404/Qoder2Api.git && cd Qoder2Api
-pip install cryptography
-python main.py --login                                            # 浏览器批准设备登录
-python main.py --no-menu --port 61025 --api-key sk-qoder-local    # 常驻代理
+cp .env.example .env
 ```
 
-`.env` 设 `QODER_MODE=proxy` + `QODER_BASE_URL=http://127.0.0.1:61025/v1` + `QODER_API_KEY=sk-qoder-local`。
-**注意**：proxy 模式下 `--api-key` 必须与 `QODER_API_KEY` 完全一致，否则网关侧全部 401。
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `GATEWAY_HOST` | `127.0.0.1` | 监听地址；局域网/服务器访问设 `0.0.0.0` |
+| `GATEWAY_PORT` | `8317` | 监听端口 |
+| `GATEWAY_DB` | `./gateway.db` | SQLite（key 哈希 + 限流计数 + 用量日志） |
+| `DEFAULT_RPM` / `DEFAULT_DAILY_REQUESTS` | `60` / `2000` | 新 key 的默认限额 |
+| `REQUEST_TIMEOUT` | `180` | 上游请求超时（秒） |
+| `FREE_AUTO_CHAIN` | `workbuddy,qoder` | `free/auto` 的降级链顺序 |
+| `NO_PROXY` / `no_proxy` | `127.0.0.1,localhost` | 本机回环不走系统代理（Qoder 直连需要） |
+| `WB_ENDPOINT` / `WB_PUBLISHABLE_KEY` | 空 | WorkBuddy 云服务 `publicConfig`（见第 7 节） |
+| `WB_ORIGIN` | 取 endpoint origin | Origin 校验不一致时手动指定应用发布域名 |
+| `WB_MODELS` | 空 | 静态 WB 模型 id 列表（不填则启动时自动拉取目录） |
+| `WB_DEFAULT_MODEL` | 空 | `free/auto` 链上 WB 侧模型 id（如 `auto`） |
+| `WB_DEFAULT_SYSTEM` | `You are a helpful assistant...` | 调用方没带 system 消息时注入 |
+| `QODER_MODE` | `direct` | `direct`=内嵌直连；`proxy`=独立 Qoder2Api 进程 |
+| `QODER_AUTH_PATH` | `~/.qoder2api-auth.json` | Qoder 登录态文件路径（Docker 可指向数据卷） |
+| `QODER_UA` | 桌面端 UA | 可选，覆盖上游 User-Agent |
+| `QODER_BASE_URL` / `QODER_API_KEY` | — | 仅 `QODER_MODE=proxy` 时生效 |
+| `MOCK_BACKEND` / `MOCK_A_FAIL_FIRST` | — | 测试用假后端（见 tests/smoke.py） |
 
-> 两种模式共用同一份模型池：`qwen3.8-flash`（免费零积分）/ `qwen3.7-plus` / `qwen3.5-flash` /
-> `kimi-k2.7-code` / `deepseek-v4-pro` / `minimax-m2.5`（后五个花试用积分）。
-> 本机账号 `personal_standard`（Free 档），积分用量 0.16%。
-> 已知限制：tool 角色消息会被折叠成 user；reasoning_content 透传。
+## 3. 三种距离
 
-> 另一个备选：`QODER_MODE=proxy` 时把 `QODER_BASE_URL` 指向任何 OpenAI 兼容服务（比如你自建的 Ollama、其他中转），适配器是通用的。
+| 场景 | Base URL | 前提 |
+|---|---|---|
+| 本机 | `http://127.0.0.1:8317/v1` | 默认即可 |
+| 局域网 | `http://<局域网IP>:8317/v1` | `.env` 设 `GATEWAY_HOST=0.0.0.0`；防火墙放行端口 |
+| 公网 | `https://<域名>/v1` | 服务器部署 + HTTPS（见下） |
 
-## 5. 部署
+**客户端接入的完整指南（Cherry Studio / ChatBox / NextChat / Cline / Dify / LangChain / n8n / 手机 / 反向接入 WorkBuddy 与 Qoder CLI）见 [CLIENTS.md](CLIENTS.md)。**
 
-**本机**（默认）：`GATEWAY_HOST=127.0.0.1 GATEWAY_PORT=8317`，一条 `python -m gateway` 起全部
-**局域网**：`GATEWAY_HOST=0.0.0.0`，key 鉴权强制开启，注意 Windows 防火墙放行端口
-**EC2 / 服务器**（systemd）：
+## 4. 部署到服务器
+
+**systemd（Linux）**：
 
 ```ini
 # /etc/systemd/system/model-gateway.service
@@ -134,26 +135,27 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-Docker：`docker build -t model-gateway . && docker run -d -p 8317:8317 --env-file .env model-gateway`
-（token 文件在容器外 `~/.qoder2api-auth.json`，需挂载或重新 `qoder-login`）
+**Docker**：
 
-外网访问建议套一层 Caddy / Nginx / Cloudflare Tunnel 上 HTTPS。**永远不要无鉴权暴露到公网**——两个上游都是免费额度池，被打爆的只有你。
+```bash
+docker build -t model-gateway .
+docker run -d -p 8317:8317 --env-file .env \
+  -v /srv/model-gateway:/data \
+  -v ~/.qoder2api-auth.json:/data/qoder-auth.json \
+  model-gateway
+```
 
-## 6. 调用示例
+`/data` 存 `gateway.db`；`qoder-auth.json` 是 Qoder 登录态（先在宿主机跑一次 `python -m gateway qoder-login`，再把文件挂进来；不挂则 Qoder 后端不可用，WorkBuddy 不受影响）。
 
-**完整客户端接入指南（Cherry Studio / ChatBox / NextChat / Cline / Dify / LangChain / n8n / 手机与局域网 / 反向接入 WorkBuddy 与 Qoder CLI）见 [CLIENTS.md](CLIENTS.md)。**
+**HTTPS**：外网访问建议套 Caddy / Nginx / Cloudflare Tunnel。**永远不要无鉴权暴露到公网**——两个上游都是免费额度池，被打爆的只有你。
 
-三要素：Base URL `http://127.0.0.1:8317/v1` + API Key `sk-gw-xxx` + 模型 `free/auto`。
-
-curl（流式）：
+## 5. 调用速验
 
 ```bash
 curl http://127.0.0.1:8317/v1/chat/completions \
   -H "Authorization: Bearer sk-gw-xxx" -H "Content-Type: application/json" \
-  -d '{"model":"free/auto","stream":true,"messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"free/auto","messages":[{"role":"user","content":"你好"}]}'
 ```
-
-Python（openai SDK 零改造）：
 
 ```python
 from openai import OpenAI
@@ -163,25 +165,76 @@ r = client.chat.completions.create(model="free/auto",
 print(r.choices[0].message.content)
 ```
 
-**反向彩蛋**：WorkBuddy（设置 → 模型 → 自定义 API）和 Qoder CLI（v1.1.50+ `/model → Custom`）都支持接入 OpenAI 兼容自定义模型——把这个网关填进去，就等于用一个 `sk-gw-` key 把两个免费池喂回给这两个工具。
+## 6. 模型命名与路由
 
-## 7. 故障排查
+| 请求的 model | 行为 |
+|---|---|
+| `free/auto`（或 `auto`） | 按 `FREE_AUTO_CHAIN` 顺序尝试各后端默认模型，失败自动降级 |
+| `wb/<id>` | WorkBuddy 后端，`<id>` 为云服务模型目录 id |
+| `qoder/<id>` | Qoder 后端（直连或 proxy，取决于 `QODER_MODE`） |
+| 裸 `<id>` | 按各后端目录匹配 |
+
+- `GET /v1/models` 返回聚合目录（`free/auto` + `wb/*` + `qoder/*`，共 39 个）
+- 降级只发生在**首包发出前**；流开始后上游中断以错误事件收尾
+
+## 7. WorkBuddy 侧对接详解
+
+1. **激活云服务**：在 WorkBuddy 对话里说"给模型网关激活云服务"（弹官方确认框）。激活后得到 `publicConfig`：
+   - `endpoint` —— 形如 `https://<应用发布域名>.workbuddy.link`（数据面基址）
+   - `publishableKey` —— `wbpk_` 开头（设计上就是前端可见的标识，**不是秘密**，真正的边界是 Origin 校验）
+2. **填 .env**：`WB_ENDPOINT=<endpoint>`，`WB_PUBLISHABLE_KEY=<wbpk_...>`
+3. **Origin**：服务端校验 Origin 与应用发布域名一致。网关默认取 endpoint 的 origin；若报 `auth_` 类错误，设 `WB_ORIGIN`
+4. **选默认模型**：起网关后 `GET /v1/models` 看 WB 侧目录，把选中的 id 填 `WB_DEFAULT_MODEL`
+5. **配额**：按应用有创建者配额（免用户 key，超额报 `quota_` 错误）；用量到 WorkBuddy 管理面板看
+
+> 开发时激活的应用目录含 32 个模型：`auto` / `step-5-preview` / `hy4-preview` / `glm-5.3`(-flash) /
+> `kimi-k3-1` / `deepseek-v4-pro`(-flash) / `minimax-m3` / `hunyuan-2.0-thinking` 等。
+> 实测多个模型 `credit: 0` 零积分调用；思考类模型在小 `max_tokens`（≤200）时正文可能为空，留足预算。
+
+## 8. Qoder 侧对接详解（两种模式）
+
+**direct（默认）**——登录态管理与上游调用内嵌于网关（`gateway/qoder_direct.py`，移植自社区 Qoder2Api，MIT）：
+
+- 上游 `https://api2-v2.qoder.sh/model/v1/chat/completions`（OpenAI 格式，Bearer token）
+- 登录态 `~/.qoder2api-auth.json`（token + refreshToken，过期自动刷新）；`QODER_AUTH_PATH` 可改路径
+- 登录/查状态：`python -m gateway qoder-login` / `qoder-status`
+- 模型池：`qwen3.8-flash`（免费零积分）/ `qwen3.7-plus` / `qwen3.5-flash` / `kimi-k2.7-code` / `deepseek-v4-pro` / `minimax-m2.5`（后五个花试用积分）
+
+**proxy（备选）**——独立 Qoder2Api 进程：
+
+```bash
+git clone https://github.com/ErfanBagheri404/Qoder2Api.git && cd Qoder2Api
+pip install cryptography
+python main.py --login
+python main.py --no-menu --port 61025 --api-key sk-qoder-local
+```
+
+`.env` 设 `QODER_MODE=proxy` + `QODER_BASE_URL=http://127.0.0.1:61025/v1` + `QODER_API_KEY=sk-qoder-local`。
+**proxy 模式下 `--api-key` 必须与 `QODER_API_KEY` 完全一致**，否则网关侧全部 401。
+
+> `QODER_MODE=proxy` 时 `QODER_BASE_URL` 也可以是任何 OpenAI 兼容服务（自建 Ollama、其他中转）。
+> 已知限制：tool 角色消息会被折叠成 user；reasoning_content 透传。
+
+## 9. 故障排查
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
+| `python: command not found` | 不在 PATH | Windows 重装勾选 Add to PATH；macOS/Linux 用 `python3` |
+| 中文乱码/打印崩溃 | Windows GBK 代码页 | 已内置 UTF-8 重配置；老旧终端可 `chcp 65001` |
 | 401 invalid api key | key 错/被吊销/没建 | `python manage_keys.py list` 核对 |
-| 429 + Retry-After | 超 RPM 或日限 | 等一会儿，或 `manage_keys.py` 重建时调大 `--rpm/--daily` |
-| 400 model_not_found | 模型名不在目录 | `GET /v1/models` 看可用列表 |
-| 502，日志含 `workbuddy upstream HTTP 401/403` | Origin 不匹配 | 设 `WB_ORIGIN` 为应用发布域名 |
-| 502，日志含 `quota_` | WB 配额超了 | 降级到 Qoder（调整 `FREE_AUTO_CHAIN` 顺序）或升级配额 |
-| 502，日志含 `qoder not logged in` | 直连模式未登录/登录态失效 | `python -m gateway qoder-login` 重登 |
-| 502，日志含 `upstream connection failed` | 上游不可达 | 直连模式查网络/代理；proxy 模式确认 Qoder2Api 在跑；系统有代理时 `.env` 已含 `NO_PROXY=127.0.0.1,localhost` |
-| 流式中途出错误事件 | 上游断流 | 重试；WorkBuddy 侧仅流式，断流无恢复 |
+| 429 + Retry-After | 超 RPM/日限 | 等待，或重建 key 调大 `--rpm/--daily` |
+| 400 model_not_found | 模型名不在目录 | `GET /v1/models` 核对 |
+| 502 `workbuddy upstream HTTP 401/403` | Origin 不匹配 | 设 `WB_ORIGIN` 为应用发布域名 |
+| 502 `qoder not logged in` | 直连未登录/失效 | `python -m gateway qoder-login`；Docker 检查挂载 |
+| 502 `upstream connection failed` | 上游不可达 | 直连查网络/代理；proxy 模式确认 Qoder2Api 在跑；`.env` 已含 `NO_PROXY` |
+| 局域网连不上 | 绑定了 127.0.0.1 / 防火墙 | `GATEWAY_HOST=0.0.0.0` + 放行端口 |
+| 流式中途错误事件 | 上游断流 | 重试；WB 侧仅流式，断流无恢复 |
 
-## 8. 目录结构与常用命令
+## 10. 目录结构与常用命令
 
 ```
 model-gateway/
+├── run.sh / run.bat          # 一键启动（自动建 venv + 装依赖）
 ├── gateway/
 │   ├── __main__.py     # 入口：python -m gateway [qoder-login|qoder-status]
 │   ├── config.py       # 环境变量配置 + .env 加载
@@ -193,9 +246,12 @@ model-gateway/
 ├── manage_keys.py      # key 管理 CLI：add / list / revoke / usage
 ├── tests/smoke.py      # 端到端测试（mock 后端，13 项断言）
 ├── tests/live_failover.py  # 真实双池降级测试（两个方向）
+├── CLIENTS.md          # 别处调用指南（各客户端配置）
 ├── .env.example
-├── Dockerfile
-└── requirements.txt
+├── Dockerfile / .dockerignore
+├── pyproject.toml      # pip install . 后得到 model-gateway 命令
+├── requirements.txt / requirements.lock.txt
+└── LICENSE
 ```
 
 ```bash
@@ -207,17 +263,17 @@ python manage_keys.py list
 python manage_keys.py revoke --name <用途>
 python manage_keys.py usage [--days 7]     # 按 key/后端/模型对账 token 与耗时
 python tests/smoke.py                      # 回归测试（13 项）
-python tests/live_failover.py              # 真实双池降级（2 项）
+python tests/live_failover.py              # 真实双池降级（2 项，需 Qoder 已登录）
 ```
 
-## 9. 已知边界
+## 11. 已知边界
 
 - `n>1`（多候选）仅非流式部分支持；WB 侧合成只取 choices[0]
-- tools 调用：WB 侧透传 delta；Qoder 上游会把 tool 角色折叠成 user，工具链在 Qoder 侧不完整
+- tools 调用：WB 侧透传 delta；Qoder 上游把 tool 角色折叠成 user，工具链不完整——依赖工具调用优先用 `wb/*` 模型
 - 单实例部署（内存态目录缓存 + SQLite 计数）；多实例需换 Redis 计数
 - 限流计数在请求进入时即消耗（含最终失败的请求），防打爆优先
-- 内嵌的 Qoder 直连客户端固定自 Qoder2Api 当前版本；上游 API 若变动，以 Qoder2Api 仓库更新为准同步 `gateway/qoder_direct.py`
+- 内嵌的 Qoder 直连客户端固定自 Qoder2Api 当前版本；上游 API 变动时以 Qoder2Api 仓库为准同步 `gateway/qoder_direct.py`
 
-## 10. License
+## 12. License
 
 MIT，见 [LICENSE](LICENSE)。`gateway/qoder_direct.py` 移植自 Qoder2Api（MIT License, Copyright (c) 2026 ErfanBagheri404），版权声明保留在文件头。

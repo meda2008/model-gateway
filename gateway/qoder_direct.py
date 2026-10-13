@@ -43,8 +43,12 @@ QUOTA_URL = f"{OPENAPI_BASE}/api/v2/quota/usage"
 PLAN_URL = f"{OPENAPI_BASE}/api/v2/user/plan"
 USERINFO_URL = f"{OPENAPI_BASE}/api/v1/userinfo"
 
-UA = "Qoder/1.1.61 (Windows; x64) node/20"
-AUTH_PATH = os.path.join(os.path.expanduser("~"), ".qoder2api-auth.json")
+UA = os.environ.get("QODER_UA") or "Qoder/1.1.61 (Windows; x64) node/20"
+# 登录态文件：默认 ~/.qoder2api-auth.json；可用 QODER_AUTH_PATH 指向别处
+# （Docker/服务器场景挂载到数据卷，如 QODER_AUTH_PATH=/data/qoder-auth.json）
+AUTH_PATH = os.environ.get("QODER_AUTH_PATH") or os.path.join(
+    os.path.expanduser("~"), ".qoder2api-auth.json"
+)
 
 # 上游模型 id 映射（直连接口只认右侧 id；未知 id 原样透传）
 MODELS = {
