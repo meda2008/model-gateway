@@ -1,7 +1,8 @@
 """API Key 签发、校验与限流。
 
 - key 形如 sk-gw-xxxxxxxx，仅创建时明文展示一次，库内只存 sha256
-- 限流为滑动窗口：当前分钟 RPM + 当日请求数，SQLite 持久化，重启不丢
+- 限流为整分窗口：当前自然分钟 RPM + 当日请求数（跨分钟边界会重置计数，
+  边界处最多可放过 2 倍 burst——对保护免费额度池足够），SQLite 持久化，重启不丢
 - request_log 记录每次调用的后端/模型/token/耗时，便于对账
 """
 from __future__ import annotations

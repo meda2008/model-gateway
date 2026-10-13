@@ -121,14 +121,16 @@ def main() -> None:
             f"{r.status_code} {r.text[:100]}",
         )
 
-        # 限流：rpm=3，本分钟已用 3 次，再打 3 次应出现 429
+        # 限流：key 为 rpm=3。前半段 3 个请求不会误触（3 不大于 3）；
+        # 突发的 7 个请求无论怎么被整分钟边界切分，总有一段计数 >= 4 > 3，
+        # 必然出现 429（对分钟边界竞争免疫）
         codes = [
             httpx.post(
                 BASE + "/v1/chat/completions",
                 headers=headers,
                 json={"model": "free/auto", "messages": [{"role": "user", "content": "hi"}]},
             ).status_code
-            for _ in range(3)
+            for _ in range(7)
         ]
         check("rate limit -> 429", 429 in codes, str(codes))
 
