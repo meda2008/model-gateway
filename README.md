@@ -141,6 +141,10 @@ Docker：`docker build -t model-gateway . && docker run -d -p 8317:8317 --env-fi
 
 ## 6. 调用示例
 
+**完整客户端接入指南（Cherry Studio / ChatBox / NextChat / Cline / Dify / LangChain / n8n / 手机与局域网 / 反向接入 WorkBuddy 与 Qoder CLI）见 [CLIENTS.md](CLIENTS.md)。**
+
+三要素：Base URL `http://127.0.0.1:8317/v1` + API Key `sk-gw-xxx` + 模型 `free/auto`。
+
 curl（流式）：
 
 ```bash
