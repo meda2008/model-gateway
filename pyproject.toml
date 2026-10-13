@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "model-gateway"
+version = "1.0.0"
+description = "把 WorkBuddy 云服务与 Qoder 的免费模型桥接成带自有 API Key 的 OpenAI 兼容网关（单进程）"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "meda2008" }]
+keywords = ["openai", "gateway", "llm", "proxy", "workbuddy", "qoder"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pyflakes"]
+
+[project.scripts]
+model-gateway = "gateway.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/meda2008/model-gateway"
+Issues = "https://github.com/meda2008/model-gateway/issues"
+
+[tool.setuptools]
+packages = ["gateway"]
