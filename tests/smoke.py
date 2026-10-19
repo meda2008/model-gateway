@@ -121,6 +121,29 @@ def main() -> None:
             f"{r.status_code} {r.text[:100]}",
         )
 
+        # QODER_EXTRA_MODELS 免代码扩展（env 需在 import 前设置，用子进程验证）
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os; os.environ['QODER_EXTRA_MODELS']='foo-model=bar-upstream';"
+                " from gateway.qoder_direct import resolve_model;"
+                "assert resolve_model('foo-model') == 'bar-upstream';"
+                "assert resolve_model('qoder/glm-5.3') == 'gmodel';"
+                "assert resolve_model('unknown-id') == 'unknown-id';"
+                "print('ok')",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        check(
+            "QODER_EXTRA_MODELS passthrough",
+            r.returncode == 0 and "ok" in r.stdout,
+            r.stderr.strip()[-120:],
+        )
+
         # 限流：key 为 rpm=3。前半段 3 个请求不会误触（3 不大于 3）；
         # 突发的 7 个请求无论怎么被整分钟边界切分，总有一段计数 >= 4 > 3，
         # 必然出现 429（对分钟边界竞争免疫）

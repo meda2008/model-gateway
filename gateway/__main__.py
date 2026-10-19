@@ -2,6 +2,7 @@
     python -m gateway                启动网关（默认 Qoder 直连模式，单进程）
     python -m gateway qoder-login    Qoder 设备登录（直连模式用）
     python -m gateway qoder-status   Qoder 账号/积分状态
+    python -m gateway qoder-probe    探测 Qoder 上游可用模型 id（Qoder 上新后用）
 """
 import argparse
 import asyncio
@@ -54,6 +55,22 @@ def _qoder_status() -> None:
     print(json.dumps(info, ensure_ascii=False, indent=2))
 
 
+def _qoder_probe() -> None:
+    from . import qoder_direct as qd
+
+    print("  探测 Qoder 上游候选模型（每个 1 token；付费模型会消耗极少试用积分）...")
+    try:
+        results = asyncio.run(qd.probe_models())
+    except Exception as exc:
+        print("  探测失败: " + str(exc))
+        sys.exit(1)
+    accepted = [m for m, ok in results.items() if ok]
+    rejected = [m for m, ok in results.items() if not ok]
+    print("  可用  : " + (", ".join(accepted) or "(无)"))
+    print("  不可用: " + (", ".join(rejected) or "(无)"))
+    print("  确认新模型后，.env 加 QODER_EXTRA_MODELS=<proxy-id>=<upstream-id> 即可接入")
+
+
 def main() -> None:
     _ensure_utf8_stdio()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -61,6 +78,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("qoder-login", help="Qoder 设备登录（直连模式）")
     sub.add_parser("qoder-status", help="Qoder 账号/积分状态")
+    sub.add_parser("qoder-probe", help="探测 Qoder 上游可用模型 id（Qoder 上新后用）")
     args = parser.parse_args()
 
     load_dotenv()
@@ -69,6 +87,9 @@ def main() -> None:
         return
     if args.cmd == "qoder-status":
         _qoder_status()
+        return
+    if args.cmd == "qoder-probe":
+        _qoder_probe()
         return
 
     settings = Settings.from_env()

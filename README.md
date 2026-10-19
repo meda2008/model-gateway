@@ -100,8 +100,10 @@ cp .env.example .env
 | `WB_DEFAULT_SYSTEM` | `You are a helpful assistant...` | 调用方没带 system 消息时注入 |
 | `QODER_MODE` | `direct` | `direct`=内嵌直连；`proxy`=独立 Qoder2Api 进程 |
 | `QODER_AUTH_PATH` | `~/.qoder2api-auth.json` | Qoder 登录态文件路径（Docker 可指向数据卷） |
+| `QODER_EXTRA_MODELS` | 空 | `proxy-id=upstream-id,...` Qoder 上新模型时免代码追加 |
 | `QODER_UA` | 桌面端 UA | 可选，覆盖上游 User-Agent |
 | `QODER_BASE_URL` / `QODER_API_KEY` | — | 仅 `QODER_MODE=proxy` 时生效 |
+| `CATALOG_REFRESH_SECONDS` | `300` | 模型目录后台刷新间隔（上游上新后最长这么久自动生效） |
 | `MOCK_BACKEND` / `MOCK_A_FAIL_FIRST` | — | 测试用假后端（见 tests/smoke.py） |
 
 ## 3. 三种距离
@@ -174,8 +176,34 @@ print(r.choices[0].message.content)
 | `qoder/<id>` | Qoder 后端（直连或 proxy，取决于 `QODER_MODE`） |
 | 裸 `<id>` | 按各后端目录匹配 |
 
-- `GET /v1/models` 返回聚合目录（`free/auto` + `wb/*` + `qoder/*`，共 39 个）
+- `GET /v1/models` 返回聚合目录（`free/auto` + `wb/*` + `qoder/*`）
 - 降级只发生在**首包发出前**；流开始后上游中断以错误事件收尾
+
+### 新模型自动发现（两边都会不停上新）
+
+| 上游 | 发现方式 | 新模型多久生效 |
+|---|---|---|
+| WorkBuddy 云服务 | **全自动**：`/.cloud/llm/models` 实时拉取，后台每 `CATALOG_REFRESH_SECONDS`（默认 5 分钟）刷新一次，`/v1/models` 被调用时也即时刷新 | ≤5 分钟，零配置 |
+| Qoder（direct） | 上游**没有公开目录端点**（常见路径均 404；桌面端 dynamic-text 目录里有 cmodel/gfmodel/dfmodel 等内部 id，但直连接点不接受）。网关用实测验证过的静态映射 + 三种扩展方式（见下） | 取决于选哪种扩展 |
+| Qoder（proxy） | 走 `QODER_BASE_URL/models`，与 WB 同样周期刷新 | ≤5 分钟 |
+
+**Qoder 上新的三种加法（都不用改代码）**：
+
+```bash
+# 1) 环境变量追加映射（推荐）：.env 加一行，重启网关
+QODER_EXTRA_MODELS=glm-5.4=gmodel2,new-flash=qwen-flash2
+
+# 2) 直接传上游 id：resolve_model 对未知 id 原样透传
+#    POST /v1/chat/completions {"model": "qoder/gmodel2", ...}
+
+# 3) 先探测再接入：确认某个 id 上游收不收（每个 1 token，付费模型耗极少积分）
+python -m gateway qoder-probe
+```
+
+> 实测记录（2026-10-19）：上游接受 `qwen-flash / qmodel / kmodel / dmodel / mmodel / gmodel`；
+> 拒绝 `gfmodel / qfmodel / dfmodel / cmodel`（桌面端内部 key）。`gmodel`（GLM-5.3）就是靠
+> qoder-probe 发现并加入映射的新模型。注意 `glm-5.3`/`wb/auto` 这类思考模型在小预算下
+> 正文为空（token 全耗在 reasoning），留足 max_tokens。
 
 ## 7. WorkBuddy 侧对接详解
 
@@ -198,7 +226,9 @@ print(r.choices[0].message.content)
 - 上游 `https://api2-v2.qoder.sh/model/v1/chat/completions`（OpenAI 格式，Bearer token）
 - 登录态 `~/.qoder2api-auth.json`（token + refreshToken，过期自动刷新）；`QODER_AUTH_PATH` 可改路径
 - 登录/查状态：`python -m gateway qoder-login` / `qoder-status`
-- 模型池：`qwen3.8-flash`（免费零积分）/ `qwen3.7-plus` / `qwen3.5-flash` / `kimi-k2.7-code` / `deepseek-v4-pro` / `minimax-m2.5`（后五个花试用积分）
+- 模型池（2026-10-19 实测验证）：`qwen3.8-flash`（免费零积分）/ `qwen3.5-flash` / `qwen3.7-plus` /
+  `glm-5.3` / `kimi-k2.7-code` / `deepseek-v4-pro` / `minimax-m3`(=`minimax-m2.5`)。
+  上游无公开目录端点，上新后用 `python -m gateway qoder-probe` 探测 + `QODER_EXTRA_MODELS` 追加（见 §6）
 
 **proxy（备选）**——独立 Qoder2Api 进程：
 
@@ -258,6 +288,7 @@ model-gateway/
 python -m gateway                          # 启动网关（唯一进程）
 python -m gateway qoder-login              # Qoder 设备登录
 python -m gateway qoder-status             # Qoder 账号/积分状态
+python -m gateway qoder-probe              # 探测 Qoder 上游可用模型 id（上新后用）
 python manage_keys.py add --name <用途> [--rpm 60] [--daily 2000]
 python manage_keys.py list
 python manage_keys.py revoke --name <用途>

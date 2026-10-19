@@ -50,16 +50,47 @@ AUTH_PATH = os.environ.get("QODER_AUTH_PATH") or os.path.join(
     os.path.expanduser("~"), ".qoder2api-auth.json"
 )
 
-# 上游模型 id 映射（直连接口只认右侧 id；未知 id 原样透传）
+# 上游模型 id 映射（直连接口只认右侧 id；未知 id 原样透传）。
+# 注意：Qoder 上游没有公开的模型目录端点（常见路径均 404，社区 Qoder2Api 同样硬编码），
+# 下表为逐个实测验证过的集合（最近验证 2026-10-19）。
+# 桌面端 dynamic-text 目录里还有 Cantus(cmodel)、DeepSeek-V4-Flash(dfmodel)、
+# GLM-5.3-Flash(gfmodel)、Qwen3.8-Flash(qfmodel) 等标签，但直连接点不接受这些 id
+# （实测 invalid_model_error）——桌面 app 内部另有映射，上游只认下方集合。
+# Qoder 上新后的两种加法（都不用改代码）：
+#   1. .env 加 QODER_EXTRA_MODELS=<proxy-id>=<upstream-id>,...
+#   2. 直接传上游 id（resolve_model 对未知 id 原样透传）
+# 想确认某个新 id 是否可用：python -m gateway qoder-probe
 MODELS = {
-    "qwen3.8-flash": "qwen-flash",   # 免费，零积分
-    "qwen3.7-plus": "qmodel",
-    "qwen3.5-flash": "qwen-flash",
-    "kimi-k2.7-code": "kmodel",
-    "deepseek-v4-pro": "dmodel",
-    "minimax-m2.5": "mmodel",
+    "qwen3.8-flash": "qwen-flash",   # Qwen3.8-Flash；免费，零积分
+    "qwen3.5-flash": "qwen-flash",   # 旧别名，同一上游 id
+    "qwen3.7-plus": "qmodel",        # 花试用积分
+    "glm-5.3": "gmodel",             # 2026-10-19 实测新增（桌面端标签 GLM-5.3）
+    "kimi-k2.7-code": "kmodel",      # 花试用积分
+    "deepseek-v4-pro": "dmodel",     # 花试用积分
+    "minimax-m3": "mmodel",          # 桌面端标签已是 MiniMax-M3，上游 id 不变
+    "minimax-m2.5": "mmodel",        # 旧别名
 }
 DEFAULT_MODEL = "qwen3.8-flash"
+
+# qoder-probe 的候选列表：已验证的 + 桌面端目录里出现过的内部 key（供探测）
+PROBE_CANDIDATES = [
+    "qwen-flash", "qmodel", "kmodel", "dmodel", "mmodel", "gmodel",
+    "gfmodel", "qfmodel", "dfmodel", "cmodel", "qwen4-flash", "qmodel-plus",
+]
+
+
+def _extra_models() -> dict[str, str]:
+    """解析 QODER_EXTRA_MODELS：'foo=bar,baz=qux' -> {'foo': 'bar', 'baz': 'qux'}。"""
+    out: dict[str, str] = {}
+    for pair in os.environ.get("QODER_EXTRA_MODELS", "").split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        proxy, _, upstream = pair.partition("=")
+        proxy, upstream = proxy.strip().lower(), upstream.strip()
+        if proxy and upstream:
+            out[proxy] = upstream
+    return out
 
 
 class QoderError(Exception):
@@ -92,7 +123,9 @@ def resolve_model(name: str | None) -> str:
     if not name:
         return MODELS[DEFAULT_MODEL]
     low = name.strip().lower().rsplit("/", 1)[-1]
-    return MODELS.get(low, low)
+    if low in MODELS:
+        return MODELS[low]
+    return _extra_models().get(low, low)
 
 
 def _expired(s: dict) -> bool:
@@ -344,3 +377,24 @@ async def status() -> dict[str, Any]:
             except httpx.HTTPError as exc:
                 out[name] = f"error: {exc}"
     return out
+
+
+# ---------- 模型探测（CLI: python -m gateway qoder-probe） ----------
+
+async def probe_models(candidates: list[str] | None = None, timeout: float = 60.0) -> dict[str, bool]:
+    """逐个候选 id 发 1-token 请求，返回 {id: 是否被上游接受}。
+
+    注意：付费模型（qmodel/kmodel/dmodel/mmodel/gmodel 等）会消耗极少试用积分。
+    """
+    tok = await get_token()
+    if not tok:
+        raise QoderError("qoder not logged in; run: python -m gateway qoder-login", status=401)
+    results: dict[str, bool] = {}
+    for model in candidates or PROBE_CANDIDATES:
+        body = {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1, "stream": False}
+        try:
+            data = await chat_once(body, timeout=timeout, retries=1)
+            results[model] = isinstance(data, dict) and "choices" in data
+        except QoderError:
+            results[model] = False
+    return results

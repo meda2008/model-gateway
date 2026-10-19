@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -104,7 +105,25 @@ def create_app(settings: Settings) -> FastAPI:
             except Exception as exc:  # 目录拉取失败不阻塞启动
                 app.state.catalog[name] = []
                 logger.warning("catalog warm-up failed for %s: %s", name, exc)
-        yield
+
+        # 后台周期刷新：上游会上新模型（如 WB 云服务目录），默认 5 分钟内自动生效，
+        # 无需重启网关；/v1/models 被调用时也会即时刷新一次
+        refresh_seconds = float(os.environ.get("CATALOG_REFRESH_SECONDS", "300"))
+
+        async def _refresh_loop() -> None:
+            while True:
+                await asyncio.sleep(refresh_seconds)
+                for name, backend in backends.items():
+                    try:
+                        app.state.catalog[name] = await backend.models()
+                    except Exception as exc:
+                        logger.warning("catalog refresh failed for %s: %s", name, exc)
+
+        refresh_task = asyncio.create_task(_refresh_loop())
+        try:
+            yield
+        finally:
+            refresh_task.cancel()
 
     app = FastAPI(title="unified-model-gateway", version="1.0.0", lifespan=lifespan)
     app.state.catalog = {}

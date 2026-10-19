@@ -101,8 +101,10 @@ Node（openai 包同理）：`new OpenAI({ baseURL: "http://127.0.0.1:8317/v1", 
 |---|---|
 | 日常/不确定 | `free/auto`（WB 优先，挂了自动降级 Qoder） |
 | 大批量/零积分 | `qoder/qwen3.8-flash`（Qoder 免费模型，不烧双方积分） |
-| 要质量 | `wb/step-5-preview`、`wb/glm-5.3`、`wb/kimi-k3-1`、`wb/deepseek-v4-pro` |
-| 完整列表 | `GET /v1/models` 或客户端里的模型列表（39 个） |
+| 要质量 | `wb/step-5-preview`、`wb/glm-5.3`、`wb/kimi-k3-1`、`wb/deepseek-v4-pro`、`qoder/glm-5.3` |
+| 完整列表 | `GET /v1/models` 或客户端里的模型列表（43 个，两边上新后 5 分钟内自动进目录） |
+
+注意：`free/auto`（WB 侧）、`qoder/glm-5.3` 等可能路由到思考模型，小 `max_tokens`（≤600）时正文可能为空、token 全在 reasoning——留足预算（1000+）。Qoder 侧新模型可用 `qoder-probe` 探测后用 `QODER_EXTRA_MODELS` 追加（见 README §6）。
 
 ## 6. Key 管理：一个用途一把 key
 
