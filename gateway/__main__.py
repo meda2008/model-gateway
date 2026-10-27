@@ -10,6 +10,7 @@ import json
 import logging
 import socket
 import sys
+import time
 import webbrowser
 
 import uvicorn
@@ -37,6 +38,34 @@ def _port_in_use(host: str, port: int) -> bool:
             return s.connect_ex((check_host, port)) == 0
     except OSError:
         return False
+
+
+def _open_browser(url: str) -> None:
+    """尽量打开默认浏览器到给定地址；环境无浏览器或被拦截时静默忽略。"""
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _open_browser_when_ready(url: str, port: int, timeout: float = 20.0) -> None:
+    """后台轮询 healthz，等服务真正就绪后再打开浏览器（避免提前打开 404）。"""
+    import threading
+    import urllib.request
+
+    def _t() -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=1) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                pass
+            time.sleep(0.3)
+        _open_browser(url)
+
+    threading.Thread(target=_t, daemon=True).start()
 
 
 def _qoder_login() -> None:
@@ -106,16 +135,19 @@ def main() -> None:
         return
 
     settings = Settings.from_env()
-    if _port_in_use(settings.host, settings.port):
-        print(f"  端口 {settings.port} 已被占用——服务已在运行：http://{settings.host}:{settings.port}/v1")
-        print("  无需重复启动；如需重启请先停掉旧实例（关掉旧的服务窗口）。")
-        try:
-            if sys.stdin is not None and sys.stdin.isatty():
-                input("  按回车关闭此窗口...")
-        except (EOFError, OSError):
-            pass
+    port = settings.port
+    landing = f"http://127.0.0.1:{port}/"
+
+    if _port_in_use(settings.host, port):
+        print(f"  端口 {port} 已被占用——服务已在运行：{landing}")
+        print("  正在为你打开状态页（无需重复启动）。")
+        _open_browser(landing)
+        time.sleep(4)  # 让本窗口停留几秒，明确“已打开”，避免黑窗一闪被误判为打不开
         return
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info")
+
+    # 首次启动：等服务就绪后自动打开浏览器状态页，给“双击”一个明确反馈
+    _open_browser_when_ready(landing, port)
+    uvicorn.run(create_app(settings), host=settings.host, port=port, log_level="info")
 
 
 if __name__ == "__main__":

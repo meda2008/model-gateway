@@ -19,8 +19,8 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .backends import (
@@ -35,6 +35,48 @@ from .keystore import ApiKey, KeyStore
 from .sse import DONE_FRAME, sse_frame
 
 logger = logging.getLogger("gateway")
+
+# 双击桌面快捷方式后自动打开的“落地页”：纯静态、无外部依赖、深色主题。
+_STATUS_HTML = r"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Model Gateway</title>
+<style>
+:root{--bg:#0f1420;--card:#1a2333;--fg:#e6edf3;--muted:#8b98a9;--accent:#3fb950;--blue:#58a6ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:32px}
+.wrap{max-width:760px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);margin-bottom:24px;font-size:13px}
+.card{background:var(--card);border:1px solid #2a3344;border-radius:12px;padding:20px;margin-bottom:16px}
+.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #232c3b;font-size:14px}
+.row:last-child{border-bottom:none}
+.k{color:var(--muted)}
+.v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;text-align:right}
+.badge{display:inline-block;background:rgba(63,185,80,.15);color:var(--accent);padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+code{background:#0d1117;padding:2px 6px;border-radius:6px;font-size:12px;color:var(--blue)}
+pre{background:#0d1117;padding:14px;border-radius:8px;overflow:auto;font-size:12px;color:var(--blue);margin:8px 0 0;white-space:pre-wrap}
+</style></head>
+<body><div class="wrap">
+<h1>Unified Model Gateway</h1>
+<div class="sub">统一模型网关 · OpenAI 兼容 API · 运行中</div>
+<div class="card">
+<div class="row"><span class="k">状态</span><span class="v"><span class="badge">● 运行中</span></span></div>
+<div class="row"><span class="k">OpenAI 兼容端点</span><span class="v">http://127.0.0.1:{PORT}/v1</span></div>
+<div class="row"><span class="k">API Key</span><span class="v">{KEY_STATUS}</span></div>
+<div class="row"><span class="k">已启用后端</span><span class="v">{BACKENDS}</span></div>
+<div class="row"><span class="k">模型总数</span><span class="v">{MODEL_COUNT}（含 free/auto）</span></div>
+</div>
+<div class="card">
+<div class="k" style="margin-bottom:6px">快速调用</div>
+<pre>curl http://127.0.0.1:{PORT}/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"free/auto","messages":[{"role":"user","content":"你好"}],"stream":true}'</pre>
+<div style="margin-top:10px"><span class="k">模型目录：</span><code>GET http://127.0.0.1:{PORT}/v1/models</code></div>
+<div style="margin-top:6px"><span class="k">存活探针：</span><code>GET http://127.0.0.1:{PORT}/healthz</code></div>
+</div>
+</div></body></html>"""
 
 _PREFIX_BY_BACKEND = {"workbuddy": "wb", "qoder": "qoder"}
 
@@ -154,6 +196,17 @@ def create_app(settings: Settings) -> FastAPI:
 
     # ---------- 模型解析 ----------
 
+    def _parse_backend_ref(ref: str) -> tuple[str, str] | None:
+        """解析 'wb/hy3' -> ('workbuddy', 'hy3')；非法返回 None。用于 qoder 兜底链配置。"""
+        ref = (ref or "").strip().lower()
+        if not ref or "/" not in ref:
+            return None
+        prefix, _, mid = ref.partition("/")
+        name = {"wb": "workbuddy", "qoder": "qoder"}.get(prefix)
+        if not name or not mid:
+            return None
+        return (name, mid)
+
     def resolve(model: str) -> list[tuple[str, str]]:
         """请求模型名 -> [(backend_name, upstream_model), ...] 候选链。"""
         if model in ("free/auto", "auto"):
@@ -171,7 +224,14 @@ def create_app(settings: Settings) -> FastAPI:
         for prefix, name in (("wb/", "workbuddy"), ("qoder/", "qoder")):
             if model.startswith(prefix):
                 upstream = model[len(prefix):]
-                return [(name, upstream)] if name in backends else []
+                chain = [(name, upstream)] if name in backends else []
+                # qoder 上游偶发持续 500 时，原单点链会直接整轮失败。
+                # 追加兜底后端（QODER_FALLBACK），qoder 重试耗尽后降级，避免单点故障。
+                if name == "qoder" and settings.qoder_fallback and len(chain) == 1:
+                    fb = _parse_backend_ref(settings.qoder_fallback)
+                    if fb and fb[0] != "qoder" and fb[0] in backends:
+                        chain.append(fb)
+                return chain
         wb_ids = set(settings.workbuddy.models) | {m.id for m in app.state.catalog.get("workbuddy", [])}
         if model in wb_ids and "workbuddy" in backends:
             return [("workbuddy", model)]
@@ -189,6 +249,23 @@ def create_app(settings: Settings) -> FastAPI:
             "backends": sorted(backends.keys()),
             "keys_configured": store.count() > 0,
         }
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index(request: Request):
+        catalog = getattr(request.app.state, "catalog", {})
+        backend_names = sorted(backends.keys())
+        model_count = sum(len(catalog.get(n, [])) for n in backend_names) + 1  # +1 = free/auto
+        keys_configured = store.count() > 0
+        key_status = "已配置 ✓" if keys_configured else "未配置 ✗（运行 manage_keys.py add）"
+        backends_str = "、".join(backend_names) if backend_names else "（无）"
+        html = (
+            _STATUS_HTML
+            .replace("{PORT}", str(settings.port))
+            .replace("{KEY_STATUS}", key_status)
+            .replace("{BACKENDS}", backends_str)
+            .replace("{MODEL_COUNT}", str(model_count))
+        )
+        return HTMLResponse(html)
 
     @app.get("/v1/models")
     async def list_models(key: ApiKey = Depends(_auth)):
