@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import logging
+import socket
 import sys
 import webbrowser
 
@@ -24,6 +25,18 @@ def _ensure_utf8_stdio() -> None:
             stream.reconfigure(encoding="utf-8")
         except Exception:
             pass
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    """双击启动器的高频误操作：服务已在跑时端口被占。预检并友好提示，
+    避免 uvicorn 抛 [WinError 10048] 堆栈、黑框闪退看不懂。"""
+    check_host = "127.0.0.1" if host in ("", "0.0.0.0") else host
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex((check_host, port)) == 0
+    except OSError:
+        return False
 
 
 def _qoder_login() -> None:
@@ -93,6 +106,15 @@ def main() -> None:
         return
 
     settings = Settings.from_env()
+    if _port_in_use(settings.host, settings.port):
+        print(f"  端口 {settings.port} 已被占用——服务已在运行：http://{settings.host}:{settings.port}/v1")
+        print("  无需重复启动；如需重启请先停掉旧实例（关掉旧的服务窗口）。")
+        try:
+            if sys.stdin is not None and sys.stdin.isatty():
+                input("  按回车关闭此窗口...")
+        except (EOFError, OSError):
+            pass
+        return
     uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level="info")
 
 

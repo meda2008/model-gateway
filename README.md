@@ -70,6 +70,24 @@ python -m gateway                               # 监听 127.0.0.1:8317
 python manage_keys.py add --name my-client      # 打印 sk-gw-xxx，只显示一次
 ```
 
+### 方式 C：独立 exe + 桌面快捷方式（Windows，无需本机 Python）
+
+`dist/model-gateway.exe` 是 PyInstaller 打出的**单文件可执行程序**（约 26MB，自带 Python 运行时与全部依赖），双击即跑，不依赖本机 Python 环境。桌面上的 **"Model Gateway" 快捷方式**已指向它。
+
+```bash
+# 改了代码后重建 exe
+pip install pyinstaller
+pyinstaller packaging/model-gateway.spec --noconfirm --clean
+
+# 重建/迁移桌面快捷方式（纯 Python 写 .lnk，无需 COM）
+python packaging/create_shortcut.py
+```
+
+- 快捷方式的**起始位置固定为 `model-gateway/`**：`.env` 与 `gateway.db` 按当前工作目录解析，所以配置仍用项目里那份；Qoder 登录态按用户目录解析，与位置无关
+- **端口被占用时再启动**：打印“服务已在运行”后友好退出，不会抛 `WinError 10048` 堆栈、黑框闪退
+- 想**开机自启**：`Win+R` 输入 `shell:startup`，把桌面快捷方式复制进去即可
+- 备选方案（更轻但不“独立”）：快捷方式指向 `run.bat`——代码改完即生效、无需重新打包；exe 的优势是拷到没装 Python 的机器也能跑
+
 ### 分 OS 备注
 
 | OS | 注意事项 |
@@ -251,6 +269,8 @@ python main.py --no-menu --port 61025 --api-key sk-qoder-local
 |---|---|---|
 | `python: command not found` | 不在 PATH | Windows 重装勾选 Add to PATH；macOS/Linux 用 `python3` |
 | 中文乱码/打印崩溃 | Windows GBK 代码页 | 已内置 UTF-8 重配置；老旧终端可 `chcp 65001` |
+| 双击 exe 黑框闪退 | 端口被占（服务已在跑） | 已改为友好提示后退出；看提示即可，无需处理 |
+| 双击后立刻退出且无输出 | 起始位置不对（找不到 .env） | 用 `packaging/create_shortcut.py` 重建快捷方式（起始位置固定为项目目录） |
 | 401 invalid api key | key 错/被吊销/没建 | `python manage_keys.py list` 核对 |
 | 429 + Retry-After | 超 RPM/日限 | 等待，或重建 key 调大 `--rpm/--daily` |
 | 400 model_not_found | 模型名不在目录 | `GET /v1/models` 核对 |
@@ -265,6 +285,11 @@ python main.py --no-menu --port 61025 --api-key sk-qoder-local
 ```
 model-gateway/
 ├── run.sh / run.bat          # 一键启动（自动建 venv + 装依赖）
+├── packaging/
+│   ├── exe_entry.py          # PyInstaller 入口
+│   ├── model-gateway.spec    # 打包配置（含 uvicorn 整包收集等关键坑位）
+│   ├── gateway.ico           # 应用图标（6 尺寸）
+│   └── create_shortcut.py    # 桌面快捷方式生成器（纯 Python 写 MS-SHLLINK）
 ├── gateway/
 │   ├── __main__.py     # 入口：python -m gateway [qoder-login|qoder-status]
 │   ├── config.py       # 环境变量配置 + .env 加载
